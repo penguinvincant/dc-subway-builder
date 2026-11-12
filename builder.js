@@ -1,168 +1,47 @@
 (() => {
-  const trackLayer = L.layerGroup().addTo(map);
-  const endpointLayer = L.layerGroup().addTo(map);
-  const stationLayer = L.layerGroup().addTo(map);
-  const selectionLayer = L.layerGroup().addTo(map);
-  const status = message => { document.getElementById('status').textContent = message; };
-  const metersPerLat = 111132;
-  const metersPerLon = 111320 * Math.cos(38.9 * Math.PI / 180);
-  const toMeters = p => ({x:p.lng * metersPerLon, y:p.lat * metersPerLat});
-  const toLatLng = p => L.latLng(p.y / metersPerLat, p.x / metersPerLon);
-  let selectedLine = data.lines[0]?.id || null;
-  let activeTool = 'none';
-  let startNode = null;
-  let undoStack = [];
-  let redoStack = [];
-
-  function speedCap(type) { return type === 'Light rail' ? 40 : type === 'Commuter rail' ? 65 : 55; }
-  function sampleBezier(a,b,c,d,steps=36) {
-    const out=[];
-    for(let i=0;i<=steps;i++) { const t=i/steps,u=1-t; out.push({x:u*u*u*a.x+3*u*u*t*b.x+3*u*t*t*c.x+t*t*t*d.x,y:u*u*u*a.y+3*u*u*t*b.y+3*u*t*t*c.y+t*t*t*d.y}); }
-    return out;
-  }
-  function speedFor(samples, cap) {
-    let slowest=cap;
-    for(let i=1;i<samples.length-1;i++) {
-      const a=samples[i-1],b=samples[i],c=samples[i+1];
-      const ab=Math.hypot(b.x-a.x,b.y-a.y),bc=Math.hypot(c.x-b.x,c.y-b.y),ca=Math.hypot(a.x-c.x,a.y-c.y);
-      const cross=Math.abs((b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x));
-      if(cross<.001) continue;
-      const radius=ab*bc*ca/(2*cross);
-      slowest=Math.min(slowest,Math.max(5,Math.floor(Math.sqrt(.8*radius)*2.236936/5)*5));
-    }
-    return slowest;
-  }
-  function makeSegment(start,end,type,alignment) {
-    const a=toMeters(start),d=toMeters(end),dx=d.x-a.x,dy=d.y-a.y,chord=Math.hypot(dx,dy);
-    const ux=dx/(chord||1),uy=dy/(chord||1),nx=-uy,ny=ux;
-    const ratio={Straight:0,Gentle:.045,Standard:.085,Tight:.13}[alignment] ?? .085;
-    const offset=Math.min(chord*ratio, alignment==='Tight'?340:260);
-    const b={x:a.x+ux*chord*.32+nx*offset,y:a.y+uy*chord*.32+ny*offset};
-    const c={x:d.x-ux*chord*.32+nx*offset,y:d.y-uy*chord*.32+ny*offset};
-    const samples=offset?sampleBezier(a,b,c,d):[a,d];
-    let length=0; for(let i=1;i<samples.length;i++) length+=Math.hypot(samples[i].x-samples[i-1].x,samples[i].y-samples[i-1].y);
-    return {path:samples.map(toLatLng),speed:speedFor(samples,speedCap(type)),length};
-  }
-  function offsetPath(points,offset) {
-    const px=points.map(p=>map.latLngToLayerPoint(p));
-    return px.map((p,i)=>{const before=px[Math.max(0,i-1)],after=px[Math.min(px.length-1,i+1)],dx=after.x-before.x,dy=after.y-before.y,len=Math.hypot(dx,dy)||1;return map.layerPointToLatLng(L.point(p.x-dy/len*offset,p.y+dx/len*offset));});
-  }
-  function lineFor(id) { return data.lines.find(line=>line.id===id); }
-  function optionsForLines(select,value) {
-    select.replaceChildren();
-    const none=document.createElement('option'); none.value=''; none.textContent='Unassigned'; select.append(none);
-    data.lines.forEach(line=>{const option=document.createElement('option');option.value=line.id;option.textContent=line.name;select.append(option);});
-    select.value=value||'';
-  }
-  function save() { localStorage.setItem('dc-subway-builder-v4',JSON.stringify(data)); render(); }
-  function snapshot() { return {data:JSON.parse(JSON.stringify(data)),selectedLine,activeTool,startNode:startNode?{...startNode}:null}; }
-  function recordUndo() { undoStack.push(snapshot()); if(undoStack.length>100) undoStack.shift(); redoStack=[]; updateHistoryButtons(); }
-  function updateHistoryButtons() { document.getElementById('undo').disabled=!undoStack.length; document.getElementById('redo').disabled=!redoStack.length; }
-  function restore(state) { data=state.data; selectedLine=state.selectedLine; activeTool=state.activeTool; startNode=state.startNode; save(); updateControls(); updateHistoryButtons(); }
-  function undo() { if(!undoStack.length)return;redoStack.push(snapshot());restore(undoStack.pop()); }
-  function redo() { if(!redoStack.length)return;undoStack.push(snapshot());restore(redoStack.pop()); }
-  document.getElementById('undo').onclick=undo;
-  document.getElementById('redo').onclick=redo;
-  document.addEventListener('keydown',event=>{
-    if(event.key==='Escape'&&startNode){startNode=null;renderNodes();updateControls();status('Start node cleared. Select a node to begin a connection.');return;}
-    if(!(event.ctrlKey||event.metaKey)||event.altKey)return;
-    if(['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))return;
-    if(event.key.toLowerCase()==='z'){event.preventDefault();event.shiftKey?redo():undo();}
-    else if(event.key.toLowerCase()==='y'){event.preventDefault();redo();}
-  });
-
-  function endpointConnected(track,index) {
-    const point=track.points?.[index]; if(!point)return true;
-    if(point.stationId||point.connectionId)return true;
-    return data.tracks.some(other=>other.id!==track.id&&(other.points||[]).some(p=>map.distance([point.lat,point.lng],[p.lat,p.lng])<2));
-  }
-  function selectableNodes() {
-    const nodes=data.stations.map(st=>({lat:st.lat,lng:st.lng,stationId:st.id,label:st.name,key:'station:'+st.id,kind:'station'}));
-    data.tracks.forEach(track=>{
-      if(!track.points?.length)return;
-      [0,track.points.length-1].forEach(index=>{
-        if(endpointConnected(track,index))return;
-        const p=track.points[index]; nodes.push({lat:p.lat,lng:p.lng,connectionId:p.connectionId||null,label:'Open track end',key:`${track.id}:${index===0?'start':'end'}`,kind:'track'});
-      });
-    });
-    return nodes;
-  }
-  function nearestNode(latlng) {
-    const cursor=map.latLngToContainerPoint(latlng); let match=null,best=25;
-    selectableNodes().forEach(node=>{const distance=cursor.distanceTo(map.latLngToContainerPoint([node.lat,node.lng]));if(distance<best){best=distance;match=node;}});
-    return match;
-  }
-  function nodeRef(node) { return {lat:node.lat,lng:node.lng,stationId:node.stationId||null,connectionId:node.connectionId||null}; }
-  function createTrack(a,b) {
-    if(a.key===b.key){status('Choose a different destination node.');return;}
-    const id='track-'+Date.now()+'-'+Math.random().toString(36).slice(2,7);
-    const type=document.getElementById('track-type').value,alignment=document.getElementById('curve-style').value;
-    const segment=makeSegment(a,b,type,alignment),lineId=document.getElementById('assign-line').value||null;
-    recordUndo();
-    data.tracks.push({id,points:[nodeRef(a),nodeRef(b)],segments:[{path:segment.path.map(p=>({lat:p.lat,lng:p.lng})),speed:segment.speed,length:segment.length}],lineId,type,count:document.getElementById('track-count').value,elevation:document.getElementById('elevation').value});
-    startNode=null;save();updateControls();status(`Track connected ${a.label} to ${b.label} · ${segment.speed} mph.`);
-  }
-  function selectNode(node) {
-    if(!startNode){startNode=node;renderNodes();updateControls();status(`${node.label} selected. Click a second node to build the track.`);return;}
-    createTrack(startNode,node);
-  }
-  function renderNodes() {
-    endpointLayer.clearLayers(); selectionLayer.clearLayers();
-    selectableNodes().filter(node=>node.kind==='track').forEach(node=>L.circleMarker([node.lat,node.lng],{radius:6,color:'#fff',weight:2,fillColor:'#344253',fillOpacity:1,interactive:false}).addTo(endpointLayer));
-    if(startNode)L.circleMarker([startNode.lat,startNode.lng],{radius:13,color:'#fff',weight:3,fillColor:'#177e89',fillOpacity:.35,interactive:false}).addTo(selectionLayer);
-  }
-  function updateControls() {
-    const stationButton=document.getElementById('start-station'),trackButton=document.getElementById('start-track');
-    stationButton.textContent=activeTool==='stations'?'Stop Building Stations':'Build Stations';
-    trackButton.textContent=activeTool==='tracks'?'Stop Building Tracks':'Build Tracks';
-    stationButton.classList.toggle('button-main',activeTool==='stations');trackButton.classList.toggle('button-main',activeTool==='tracks');
-    document.getElementById('map').style.cursor=activeTool==='none'?'grab':'crosshair';
-    const tip=document.getElementById('map-tip');
-    tip.textContent=activeTool==='stations'?'Click the map to place station nodes':activeTool==='tracks'?(startNode?'Select a second station or open track end':'Select a station or open track end'):'Choose Build Stations or Build Tracks';
-    renderNodes();
-  }
-  function render() {
-    const lineList=document.getElementById('line-list'); lineList.replaceChildren();
-    if(!data.lines.length){const empty=document.createElement('p');empty.className='hint';empty.textContent='No lines yet. Add one to assign tracks.';lineList.append(empty);}
-    data.lines.forEach(line=>{const button=document.createElement('button');button.type='button';button.className='line-row'+(line.id===selectedLine?' active':'');button.innerHTML='<span class="swatch"></span><span class="line-name"></span><span class="line-count"></span>';button.querySelector('.swatch').style.background=line.color;button.querySelector('.line-name').textContent=line.name;button.querySelector('.line-count').textContent=data.tracks.filter(track=>track.lineId===line.id).length+' segments';button.onclick=()=>{selectedLine=line.id;document.getElementById('assign-line').value=line.id;render();status(line.name+' selected.');};lineList.append(button);});
-    const assign=document.getElementById('assign-line');optionsForLines(assign,assign.value||selectedLine);
-    trackLayer.clearLayers();stationLayer.clearLayers();let totalMiles=0;
-    data.stations.forEach(station=>L.marker([station.lat,station.lng],{interactive:false,icon:L.divIcon({className:'station-icon',html:'<span class="station-symbol"></span><span class="station-name">'+station.name+'</span>',iconSize:[150,24],iconAnchor:[12,12]})}).addTo(stationLayer));
-    data.tracks.forEach(track=>{
-      if(!track.points||track.points.length<2)return;
-      const saved=track.segments?.[0],segment=saved?.path?.length?{path:saved.path.map(p=>L.latLng(p.lat,p.lng)),speed:saved.speed||speedCap(track.type),length:saved.length||0}:makeSegment(track.points[0],track.points[1],track.type,'Standard');
-      if(!segment.length){for(let i=1;i<segment.path.length;i++)segment.length+=map.distance(segment.path[i-1],segment.path[i]);}
-      const assigned=lineFor(track.lineId),color=assigned?.color||'#697581',count=Number(track.count)||1;totalMiles+=segment.length/1609.344*count;
-      const paths=Array.from({length:count},(_,i)=>offsetPath(segment.path,(i-(count-1)/2)*7));
-      paths.forEach(path=>L.polyline(path,{color:'#fff',weight:9,opacity:.98,lineCap:'round',lineJoin:'round',dashArray:track.elevation==='Elevated'?'3 4':null,interactive:false}).addTo(trackLayer));
-      paths.forEach(path=>L.polyline(path,{color,weight:4,opacity:1,lineCap:'round',lineJoin:'round',dashArray:track.elevation==='Elevated'?'3 4':null,interactive:false}).addTo(trackLayer));
-      if(track.elevation==='Deep tunnel')paths.forEach(path=>L.polyline(path,{color:'#fff',weight:1,opacity:.95,dashArray:'2 5',interactive:false}).addTo(trackLayer));
-      const middle=segment.path[Math.floor(segment.path.length/2)];
-      L.marker(middle,{interactive:false,icon:L.divIcon({className:'speed-label-icon',html:'<span class="speed-label">'+segment.speed+' mph</span>',iconSize:[58,20],iconAnchor:[29,10]})}).addTo(trackLayer);
-    });
-    const stationList=document.getElementById('station-list');stationList.replaceChildren();
-    if(!data.stations.length){const empty=document.createElement('p');empty.className='hint';empty.textContent='No stations built yet.';stationList.append(empty);}
-    data.stations.forEach(station=>{const row=document.createElement('div');row.className='station-row';const label=document.createElement('span');label.textContent=station.name;const remove=document.createElement('button');remove.type='button';remove.className='station-delete';remove.textContent='Remove';remove.onclick=()=>{recordUndo();data.tracks.forEach(track=>track.points.forEach(point=>{if(point.stationId===station.id)point.stationId=null;}));data.stations=data.stations.filter(item=>item.id!==station.id);data.stations.forEach((item,index)=>item.name='Station '+(index+1));save();status('Station removed; its track ends are open again.');};row.append(label,remove);stationList.append(row);});
-    const trackList=document.getElementById('track-list');trackList.replaceChildren();
-    if(!data.tracks.length){const empty=document.createElement('p');empty.className='hint';empty.textContent='No track segments built yet.';trackList.append(empty);}
-    data.tracks.forEach((track,index)=>{const row=document.createElement('div');row.className='track-row';const head=document.createElement('div');head.className='track-head';const dot=document.createElement('span');dot.className='track-dot';dot.style.background=lineFor(track.lineId)?.color||'#697581';const title=document.createElement('span');title.textContent=`Segment ${index+1}`;head.append(dot,title);const a=data.stations.find(st=>st.id===track.points?.[0]?.stationId)?.name||'Track end';const b=data.stations.find(st=>st.id===track.points?.[1]?.stationId)?.name||'Track end';const meta=document.createElement('div');meta.className='track-meta';meta.textContent=`${a} ↔ ${b} · ${track.type} · ${track.count} track${track.count==='1'?'':'s'} · ${track.elevation}`;const select=document.createElement('select');select.className='track-assign';select.setAttribute('aria-label',`Assign segment ${index+1} to a line`);optionsForLines(select,track.lineId);select.onchange=()=>{recordUndo();track.lineId=select.value||null;save();};const remove=document.createElement('button');remove.type='button';remove.className='remove-track';remove.textContent='Remove segment';remove.onclick=()=>{recordUndo();for(const point of track.points){if(!point.connectionId)continue;const key=point.connectionId;data.tracks.filter(item=>item.id!==track.id).forEach(item=>item.points.forEach(end=>{if(end.connectionId===key)end.connectionId=null;}));}data.tracks=data.tracks.filter(item=>item.id!==track.id);save();status('Track segment removed.');};row.append(head,meta,select,remove);trackList.append(row);});
-    document.getElementById('station-total').textContent=data.stations.length;document.getElementById('track-total').textContent=data.tracks.length;document.getElementById('mile-total').textContent=totalMiles.toFixed(1);
-    renderNodes();
-  }
-
-  document.getElementById('add-line').onclick=()=>{recordUndo();const index=data.lines.length,line={id:'line-'+Date.now(),name:`${lineNames[index%lineNames.length]} Line`,color:colors[index%colors.length]};data.lines.push(line);selectedLine=line.id;document.getElementById('assign-line').value=line.id;save();status(`${line.name} added and selected.`);};
-  document.getElementById('assign-line').onchange=event=>{selectedLine=event.target.value||null;render();};
-  document.getElementById('start-station').onclick=()=>{activeTool=activeTool==='stations'?'none':'stations';startNode=null;updateControls();status(activeTool==='stations'?'Click the map to place station nodes.':'Station placement stopped.');};
-  document.getElementById('start-track').onclick=()=>{activeTool=activeTool==='tracks'?'none':'tracks';startNode=null;updateControls();status(activeTool==='tracks'?'Select a station or an open track end.':'Track building stopped.');};
-  map.on('click',event=>{
-    if(activeTool==='stations'){
-      recordUndo();const station={id:'station-'+Date.now()+'-'+Math.random().toString(36).slice(2,5),name:'Station '+(data.stations.length+1),lat:event.latlng.lat,lng:event.latlng.lng};data.stations.push(station);save();updateControls();status(station.name+' placed.');return;
-    }
-    if(activeTool!=='tracks')return;
-    const node=nearestNode(event.latlng);if(!node){status('Click an existing station or an open track end. Tracks connect nodes; they are not drawn across the map.');return;}selectNode(node);
-  });
-  map.on('contextmenu',event=>{event.originalEvent.preventDefault();if(startNode){startNode=null;renderNodes();updateControls();status('Start node cleared. Track building is still active.');}else if(activeTool!=='none'){activeTool='none';updateControls();status('Building stopped.');}});
-  map.on('zoomend moveend',renderNodes);
-  window.addEventListener('storage',event=>{if(event.key==='dc-subway-builder-v4'){try{data=JSON.parse(event.newValue)||{lines:[],tracks:[],stations:[]};render();}catch{}}});
-  render();updateControls();updateHistoryButtons();
+  const lineColors=colors,names=lineNames,$=id=>document.getElementById(id);
+  const tracks=L.layerGroup().addTo(map),blueprintsLayer=L.layerGroup().addTo(map),stationsLayer=L.layerGroup().addTo(map),nodesLayer=L.layerGroup().addTo(map),speedsLayer=L.layerGroup().addTo(map),crossoversLayer=L.layerGroup().addTo(map);
+  const SAVE_KEY='dc-subway-builder-v5';
+  data.lines=Array.isArray(data.lines)?data.lines:[];data.tracks=Array.isArray(data.tracks)?data.tracks:[];data.stations=Array.isArray(data.stations)?data.stations:[];
+  let activeTool='tracks',startPoint=null,blueprints=[],selectedLine=data.lines[0]?.id||null,trackCount=2,elevation=-5,undoStack=[],redoStack=[];
+  const status=message=>{$('status').textContent=message;},capFor=t=>t==='Light rail'?40:t==='Commuter rail'?65:55;
+  const lineFor=id=>data.lines.find(x=>x.id===id),dist=(a,b)=>map.distance([a.lat,a.lng],[b.lat,b.lng]);
+  function snap(){return{data:JSON.parse(JSON.stringify(data)),blueprints:JSON.parse(JSON.stringify(blueprints)),startPoint:startPoint?{...startPoint}:null,activeTool,selectedLine,trackCount,elevation};}
+  function updateHistory(){$('undo').disabled=!undoStack.length;$('redo').disabled=!redoStack.length;}
+  function recordUndo(){undoStack.push(snap());if(undoStack.length>100)undoStack.shift();redoStack=[];updateHistory();}
+  function persist(){localStorage.setItem(SAVE_KEY,JSON.stringify(data));render();}
+  function restore(s){data=s.data;blueprints=s.blueprints;startPoint=s.startPoint;activeTool=s.activeTool;selectedLine=s.selectedLine;trackCount=s.trackCount;elevation=s.elevation;persist();updatePanel();updateHistory();}
+  function undo(){if(undoStack.length){redoStack.push(snap());restore(undoStack.pop());}}
+  function redo(){if(redoStack.length){undoStack.push(snap());restore(redoStack.pop());}}
+  $('undo').onclick=undo;$('redo').onclick=redo;
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(startPoint){startPoint=null;updatePanel();status('Track start cleared.');}else setTool('none');return;}if(!(e.ctrlKey||e.metaKey)||e.altKey||['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))return;if(e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?redo():undo();}else if(e.key.toLowerCase()==='y'){e.preventDefault();redo();}});
+  function endpoints(t){return t.points?.length?[t.points[0],t.points[t.points.length-1]]:[];}
+  function endpointConnected(t,i){const p=endpoints(t)[i];if(!p)return true;if(p.stationId||p.connectionId)return true;return data.tracks.some(o=>o.id!==t.id&&endpoints(o).some(q=>dist(p,q)<2));}
+  function nearestNode(latlng){const cursor=map.latLngToContainerPoint(latlng);let best=24,found=null;const test=n=>{const d=cursor.distanceTo(map.latLngToContainerPoint([n.lat,n.lng]));if(d<best){best=d;found=n;}};data.stations.forEach(s=>test({lat:s.lat,lng:s.lng,stationId:s.id,label:s.name,key:'station:'+s.id}));data.tracks.forEach(t=>endpoints(t).forEach((p,i)=>{if(!endpointConnected(t,i))test({lat:p.lat,lng:p.lng,connectionId:p.connectionId||t.id+(i===0?':start':':end'),label:'Open track end',key:t.id+(i===0?':start':':end')});}));return found;}
+  function pointAt(ll){const n=nearestNode(ll);return n?{lat:n.lat,lng:n.lng,stationId:n.stationId||null,connectionId:n.connectionId||null,label:n.label,key:n.key}:{lat:ll.lat,lng:ll.lng,stationId:null,connectionId:null,label:'Map point',key:'map:'+ll.lat.toFixed(6)+':'+ll.lng.toFixed(6)};}
+  function makeTrack(a,b){const len=dist(a,b);return{id:'track-'+Date.now()+'-'+Math.random().toString(36).slice(2,7),points:[{lat:a.lat,lng:a.lng,stationId:a.stationId||null,connectionId:a.connectionId||null},{lat:b.lat,lng:b.lng,stationId:b.stationId||null,connectionId:b.connectionId||null}],path:[{lat:a.lat,lng:a.lng},{lat:b.lat,lng:b.lng}],length:len,speed:capFor($('track-type').value),lineId:$('assign-line').value||null,type:$('track-type').value,count:trackCount,elevation:Number(elevation),crossovers:false};}
+  function setTool(tool){activeTool=activeTool===tool?'none':tool;startPoint=null;document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('selected',b.dataset.tool===activeTool));updatePanel();status(activeTool==='tracks'?'Click a start point, then an end point. Blueprints are straight.':activeTool==='stations'?'Click the map to place a station.':activeTool==='delete'?'Click a track to delete it.':activeTool==='crossover'?'Click a parallel track to toggle its crossover.':'Construction tool stopped.');}
+  document.querySelectorAll('[data-tool]').forEach(b=>b.onclick=()=>setTool(b.dataset.tool));
+  function offsetPath(points,offset){const px=points.map(p=>map.latLngToLayerPoint(p));return px.map((p,i)=>{const a=px[Math.max(0,i-1)],b=px[Math.min(px.length-1,i+1)],dx=b.x-a.x,dy=b.y-a.y,l=Math.hypot(dx,dy)||1;return map.layerPointToLatLng(L.point(p.x-dy/l*offset,p.y+dx/l*offset));});}
+  function styleTrack(path,color,count,elev,layer,interactive){const paths=Array.from({length:count},(_,i)=>offsetPath(path,(i-(count-1)/2)*7));paths.forEach(p=>L.polyline(p,{color:'#111',weight:10,opacity:.9,lineCap:'round',lineJoin:'round',interactive}).addTo(layer));return paths.map(p=>L.polyline(p,{color,weight:4,opacity:1,lineCap:'round',lineJoin:'round',dashArray:elev>0?'4 3':null,interactive}).addTo(layer));}
+  function drawBlueprints(){blueprintsLayer.clearLayers();nodesLayer.clearLayers();blueprints.forEach(t=>{const p=t.path.map(q=>L.latLng(q.lat,q.lng)),color=lineFor(t.lineId)?.color||'#ffc928';styleTrack(p,color,Number(t.count)||1,t.elevation,blueprintsLayer,false).forEach(layer=>layer.setStyle({dashArray:'7 6',opacity:.8}));const mid=p[Math.floor(p.length/2)];L.marker(mid,{interactive:false,icon:L.divIcon({className:'speed-label-icon',html:'<span class="speed-label">'+t.speed+' mph</span>',iconSize:[64,22],iconAnchor:[32,11]})}).addTo(blueprintsLayer);});if(startPoint)L.circleMarker([startPoint.lat,startPoint.lng],{radius:8,color:'#fff',weight:3,fillColor:'#ffc928',fillOpacity:1,interactive:false}).addTo(nodesLayer);data.tracks.forEach(t=>endpoints(t).forEach((p,i)=>{if(!endpointConnected(t,i))L.circleMarker([p.lat,p.lng],{radius:5,color:'#fff',weight:2,fillColor:'#344253',fillOpacity:1,interactive:false}).addTo(nodesLayer);}));}
+  function renderLines(){const list=$('line-list');list.replaceChildren();if(!data.lines.length){const p=document.createElement('p');p.className='hint';p.textContent='Add a line to assign blueprints.';list.append(p);}data.lines.forEach(l=>{const b=document.createElement('button');b.type='button';b.className='line-row'+(l.id===selectedLine?' active':'');b.innerHTML='<span class="swatch"></span><span class="line-name"></span>';b.querySelector('.swatch').style.background=l.color;b.querySelector('.line-name').textContent=l.name;b.onclick=()=>{selectedLine=l.id;$('assign-line').value=l.id;renderLines();};list.append(b);});const s=$('assign-line');s.replaceChildren();const empty=document.createElement('option');empty.value='';empty.textContent='Unassigned';s.append(empty);data.lines.forEach(l=>{const o=document.createElement('option');o.value=l.id;o.textContent=l.name;s.append(o);});s.value=s.value||selectedLine||'';}
+  function updateCost(){const rate={'Heavy rail':180,'Light rail':95,'Commuter rail':140},cost=blueprints.reduce((m,t)=>m+(t.length/1609.344)*(Number(t.count)||1)*(rate[t.type]||180)*1e6,0),miles=blueprints.reduce((m,t)=>m+(t.length/1609.344)*(Number(t.count)||1),0);$('planned-cost').textContent='$'+(cost/1e6).toFixed(1)+'M';$('built-cost').textContent='$'+(data.tracks.reduce((m,t)=>m+(t.length/1609.344)*(Number(t.count)||1)*(rate[t.type]||180)*1e6,0)/1e6).toFixed(1)+'M';$('planned-miles').textContent=miles.toFixed(1)+' mi';}
+  function updatePanel(){const p=$('panel');$('panel-open').hidden=!p.classList.contains('panel-closed');p.classList.toggle('panel-closed',p.dataset.closed==='true');document.querySelectorAll('[data-tool]').forEach(b=>b.classList.toggle('selected',b.dataset.tool===activeTool));$('map').style.cursor=activeTool==='none'?'grab':'crosshair';$('map-tip').textContent=activeTool==='tracks'?(startPoint?'Click an end point for a straight blueprint':'Choose a start point'):activeTool==='stations'?'Click to place a station':activeTool==='delete'?'Click a built track to delete it':activeTool==='crossover'?'Click a built parallel track':'Select a construction type';$('build-blueprints').disabled=!blueprints.length;$('clear-blueprints').disabled=!blueprints.length&&!startPoint;updateCost();drawBlueprints();}
+  function render(){tracks.clearLayers();stationsLayer.clearLayers();speedsLayer.clearLayers();crossoversLayer.clearLayers();let miles=0;data.stations.forEach(s=>L.marker([s.lat,s.lng],{interactive:false,icon:L.divIcon({className:'station-icon',html:'<span class="station-symbol"></span><span class="station-name">'+s.name+'</span>',iconSize:[150,24],iconAnchor:[12,12]})}).addTo(stationsLayer));data.tracks.forEach(t=>{const path=(t.path||t.points||[]).map(p=>L.latLng(p.lat,p.lng));if(path.length<2)return;const count=Number(t.count)||1,color=lineFor(t.lineId)?.color||'#697581';miles+=(t.length||map.distance(path[0],path[path.length-1]))/1609.344*count;const colored=styleTrack(path,color,count,Number(t.elevation)||0,tracks,true);colored.forEach(layer=>layer.on('click',e=>{L.DomEvent.stopPropagation(e);if(activeTool==='delete'){recordUndo();data.tracks=data.tracks.filter(x=>x.id!==t.id);persist();status('Track deleted.');}else if(activeTool==='crossover'){if(count<2){status('Choose Parallel or Quad tracks first.');return;}recordUndo();t.crossovers=!t.crossovers;persist();status(t.crossovers?'Crossover added.':'Crossover removed.');}}));if(t.crossovers&&count>1){const a=path[0],b=path[path.length-1],mid=L.latLng((a.lat+b.lat)/2,(a.lng+b.lng)/2);L.circleMarker(mid,{radius:5,color:'#fff',weight:2,fillColor:color,fillOpacity:1,interactive:false}).addTo(crossoversLayer);}const mid=path[Math.floor(path.length/2)];L.marker(mid,{interactive:false,icon:L.divIcon({className:'speed-label-icon',html:'<span class="speed-label">'+t.speed+' mph</span>',iconSize:[64,22],iconAnchor:[32,11]})}).addTo(speedsLayer);});$('station-total').textContent=data.stations.length;$('track-total').textContent=data.tracks.length;$('mile-total').textContent=miles.toFixed(1);$('station-list').textContent=data.stations.length?data.stations.map(s=>s.name).join(' · '):'No stations yet';$('track-list').textContent=data.tracks.length?data.tracks.length+' built segments':'No built tracks yet';tracks.eachLayer(l=>{if(l.setStyle)l.setStyle({opacity:$('show-tracks').checked?1:0});});stationsLayer.eachLayer(l=>l.setOpacity($('show-stations').checked?1:0));speedsLayer.eachLayer(l=>l.setOpacity($('show-speeds').checked?1:0));updateCost();drawBlueprints();}
+  $('add-line').onclick=()=>{recordUndo();const i=data.lines.length,l={id:'line-'+Date.now(),name:names[i%names.length]+' Line',color:lineColors[i%lineColors.length]};data.lines.push(l);selectedLine=l.id;persist();renderLines();status(l.name+' added.');};
+  $('assign-line').onchange=e=>{selectedLine=e.target.value||null;};
+  document.querySelectorAll('[data-count]').forEach(b=>b.onclick=()=>{trackCount=Number(b.dataset.count);document.querySelectorAll('[data-count]').forEach(x=>x.classList.toggle('selected',x===b));});
+  function updateElevation(){elevation=Number($('elevation').value)||0;$('elevation-value').textContent=elevation+' m';$('elevation-kind').textContent=elevation>0?'Elevated':elevation<=-16?'Deep tunnel':elevation<0?'Cut and Cover':'Surface';}
+  $('elevation-down').onclick=()=>{$('elevation').value=Number($('elevation').value)-1;updateElevation();};$('elevation-up').onclick=()=>{$('elevation').value=Number($('elevation').value)+1;updateElevation();};$('elevation').onchange=updateElevation;
+  $('build-blueprints').onclick=()=>{if(!blueprints.length)return;recordUndo();data.tracks.push(...blueprints.map(t=>({...t,id:'track-'+Date.now()+'-'+Math.random().toString(36).slice(2,7)})));blueprints=[];persist();updatePanel();status('Blueprints built.');};
+  $('clear-blueprints').onclick=()=>{blueprints=[];startPoint=null;updatePanel();status('Blueprints cleared.');};
+  $('edit-tab').onclick=()=>{$('edit-tab').classList.add('active');$('cost-tab').classList.remove('active');$('edit-content').hidden=false;$('cost-content').hidden=true;};
+  $('cost-tab').onclick=()=>{$('cost-tab').classList.add('active');$('edit-tab').classList.remove('active');$('edit-content').hidden=true;$('cost-content').hidden=false;updateCost();};
+  $('panel-close').onclick=()=>{$('panel').dataset.closed='true';updatePanel();};$('panel-open').onclick=()=>{$('panel').dataset.closed='false';updatePanel();};
+  $('show-tracks').onchange=render;$('show-stations').onchange=render;$('show-speeds').onchange=render;
+  map.on('click',e=>{if(activeTool==='stations'){recordUndo();data.stations.push({id:'station-'+Date.now(),name:'Station '+(data.stations.length+1),lat:e.latlng.lat,lng:e.latlng.lng});persist();status('Station placed.');return;}if(activeTool==='tracks'){const point=pointAt(e.latlng);if(!startPoint){startPoint=point;updatePanel();status('Start point set. Click an end point to add a straight blueprint.');return;}if(point.key===startPoint.key||dist(startPoint,point)<5){status('Choose a different end point.');return;}recordUndo();blueprints.push(makeTrack(startPoint,point));startPoint=null;updatePanel();status('Straight blueprint added. Add another segment or build blueprints.');return;}if(activeTool==='delete'){const p=map.latLngToContainerPoint(e.latlng);let found=null,best=20;data.tracks.forEach(t=>(t.path||[]).forEach(q=>{const d=p.distanceTo(map.latLngToContainerPoint([q.lat,q.lng]));if(d<best){best=d;found=t;}}));if(found){recordUndo();data.tracks=data.tracks.filter(t=>t.id!==found.id);persist();status('Track deleted.');}else status('Click close to a track to delete it.');}});
+  map.on('contextmenu',e=>{e.originalEvent.preventDefault();if(startPoint){startPoint=null;updatePanel();status('Start point cleared.');}else if(activeTool!=='none')setTool('none');});
+  map.on('zoomend moveend',drawBlueprints);
+  updateElevation();renderLines();render();updatePanel();updateHistory();
 })();

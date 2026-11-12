@@ -677,28 +677,37 @@ svg.leaflet-image-layer.leaflet-interactive path {
     .station-icon{background:transparent;border:0;pointer-events:none}.station-symbol{position:absolute;left:5px;top:5px;width:14px;height:14px;border:3px solid #fff;border-radius:50%;background:#177e89;box-shadow:0 1px 5px #16212d99}.station-name{position:absolute;left:22px;top:2px;white-space:nowrap;background:#fff;padding:2px 6px;border-radius:10px;font:600 11px/16px system-ui,sans-serif;color:#203044;box-shadow:0 1px 4px #16212d55}.station-row{display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--edge);padding:6px 0;font-size:12px}.station-delete{border:0;background:transparent;color:#8b3b3b;cursor:pointer;font-size:11px}
     @media(max-width:760px){.app{grid-template-columns:1fr;grid-template-rows:auto 62vh}aside{padding:16px;max-height:none}.map-wrap{min-height:62vh}#map{height:62vh;min-height:420px}.map-tip{top:10px}}
   </style>
+  <link rel="stylesheet" href="./builder.css">
 </head>
 <body>
   <main class="app">
-    <aside>
-      <h1>DC Subway Builder</h1><p class="sub">Washington, DC · Connect stations into a rail network</p>
-      <section class="card"><div class="label">Your lines</div><div id="line-list" class="lines"></div><div style="height:8px"></div><button id="add-line" class="button" type="button">＋ Add a line</button></section>
-      <section class="card">
-        <div class="label">Track construction</div>
-        <div class="field"><label for="assign-line">Assign to line</label><select id="assign-line"><option value="">Unassigned</option></select></div>
-        <div class="field"><label for="track-type">Track type</label><select id="track-type"><option>Heavy rail</option><option>Light rail</option><option>Commuter rail</option></select></div>
-        <div class="field"><label for="track-count">Number of tracks</label><select id="track-count"><option value="1">Single</option><option value="2" selected>Parallel · 2</option><option value="3">Parallel · 3</option></select></div>
-        <div class="field"><label for="curve-style">Track alignment</label><select id="curve-style"><option>Gentle</option><option selected>Standard</option><option>Tight</option><option>Straight</option></select></div>
-        
-        <div class="field"><label for="elevation">Elevation</label><select id="elevation"><option>Surface</option><option>Elevated</option><option>Cut &amp; cover</option><option>Deep tunnel</option></select></div>
-        <p class="hint">Tracks connect station nodes or open track ends. Select two nodes and the segment builds automatically; no freehand path drawing.</p>
-        <div style="height:10px"></div><div class="button-row"><button id="start-station" class="button" type="button">Build Stations</button><button id="start-track" class="button button-main" type="button">Build Tracks</button></div><div style="height:8px"></div><div class="button-row"><button id="undo" class="button" type="button" disabled>↶ Undo</button><button id="redo" class="button" type="button" disabled>↷ Redo</button></div>        <div id="status" class="status" aria-live="polite">Choose settings, then start building.</div>
-      </section>
-      <section class="card"><div class="label">Stations</div><div id="station-list" class="station-list"><p class="hint">No stations built yet.</p></div></section><section class="card"><div class="label">Built tracks</div><div id="track-list" class="track-list"><p class="hint">No track built yet.</p></div></section>
-      <section class="card"><div class="label">Network</div><div class="stats"><span><strong id="station-total">0</strong> stations</span><span><strong id="track-total">0</strong> trackways</span><span><strong id="mile-total">0.0</strong> track miles</span></div></section>
-      <p class="hint" style="font-size:10px;color:#8a95a2">Street map © Esri and data contributors · Construction saved in this browser.</p>
-    </aside>
-    <div class="map-wrap"><div id="map-tip" class="map-tip">Choose Build Stations or Build Tracks</div><div id="map" aria-label="Bounded street map of Washington, DC and surrounding areas"></div><div id="map-status" class="map-status" role="status" style="display:none"></div></div>
+    <div class="map-wrap">
+      <div id="map-tip" class="map-tip">Select a construction tool</div>
+      <div id="map" aria-label="Washington, DC transit construction map"></div>
+      <div id="map-status" class="map-status" role="status" style="display:none"></div>
+      <aside id="panel" class="construction-panel" data-closed="false">
+        <div class="panel-header"><h1>Construction</h1><button id="panel-close" class="close-button" type="button" aria-label="Close construction panel">×</button></div>
+        <button id="panel-open" class="panel-open" type="button" hidden>⚒ Construction</button>
+        <div class="panel-tabs"><button id="edit-tab" class="panel-tab active" type="button">⚒ Edit</button><button id="cost-tab" class="panel-tab" type="button">＄ Cost</button></div>
+        <div id="edit-content">
+          <section class="panel-section"><h2>Construction Type</h2><div class="tool-grid">
+            <button id="tool-tracks" class="tool-button selected" data-tool="tracks" type="button"><span class="tool-icon">╱╱</span>Build Tracks</button>
+            <button id="tool-stations" class="tool-button" data-tool="stations" type="button"><span class="tool-icon">◎</span>Build Stations</button>
+            <button id="tool-delete" class="tool-button" data-tool="delete" type="button"><span class="tool-icon">▣</span>Delete Tracks</button>
+            <button id="tool-crossover" class="tool-button" data-tool="crossover" type="button"><span class="tool-icon">⚒</span>Add Crossover</button>
+          </div></section>
+          <section class="panel-section"><h2>Number of Tracks</h2><div class="segment-group"><button class="segment-button" data-count="1" type="button">━ Single</button><button class="segment-button selected" data-count="2" type="button">═ Parallel</button><button class="segment-button" data-count="4" type="button">≡ Quad</button></div></section>
+          <section class="panel-section"><h2>Elevation</h2><div class="elevation-row"><button id="elevation-down" type="button" aria-label="Lower elevation">−</button><div class="elevation-value"><input id="elevation" type="number" value="-5" min="-40" max="20" step="1" aria-label="Elevation in meters"><span>m</span></div><button id="elevation-up" type="button" aria-label="Raise elevation">＋</button></div><div class="sub-row"><span id="elevation-kind">Cut and Cover</span><strong>1× cost</strong></div></section>
+          <section class="panel-section"><h2>Track Settings</h2><div class="field"><label for="track-type">Track Type</label><select id="track-type"><option>Heavy rail</option><option>Light rail</option><option>Commuter rail</option></select></div><div class="line-select-row"><label for="assign-line">Assign Line</label><select id="assign-line" class="line-select"><option value="">Unassigned</option></select></div><div class="line-select-row"><div id="line-list"></div><button id="add-line" class="add-line" type="button">＋ Add Line</button></div></section>
+          <p class="construction-hint">Click a start point and an end point to add a straight track blueprint. Curves are not added automatically. Right-click clears the current start point.</p>
+          <div class="blueprint-actions"><button id="build-blueprints" class="wide-button primary" type="button" disabled>Build Blueprints</button><button id="clear-blueprints" class="wide-button" type="button" disabled>Clear Blueprints</button></div>
+          <div class="history-row"><button id="undo" type="button" disabled>↶ Undo</button><button id="redo" type="button" disabled>↷ Redo</button></div>
+          <div id="status" class="status" aria-live="polite">Select Build Tracks or Build Stations.</div>
+        </div>
+        <div id="cost-content" hidden><section class="panel-section"><h2>Blueprint Cost</h2><div class="cost-card"><div class="cost-line"><span>Planned track length</span><strong id="planned-miles">0.0 mi</strong></div><div class="cost-line"><span>Estimated construction</span><strong id="planned-cost">$0.0M</strong></div></div><h2>Built Network</h2><div class="cost-card"><div class="cost-line"><span>Stations</span><strong id="station-total">0</strong></div><div class="cost-line"><span>Track segments</span><strong id="track-total">0</strong></div><div class="cost-line"><span>Track length</span><strong><span id="mile-total">0.0</span> mi</strong></div><div class="cost-line"><span>Built estimate</span><strong id="built-cost">$0.0M</strong></div></div><h2>Stations</h2><p id="station-list" class="hint">No stations yet</p><h2>Tracks</h2><p id="track-list" class="hint">No built tracks yet</p><p class="hint">Network changes are saved in this browser.</p></section></div>
+      </aside>
+      <div class="map-layers"><h2>▣ Map Layers</h2><label class="layer-option"><input id="show-tracks" type="checkbox" checked> Tracks</label><label class="layer-option"><input id="show-speeds" type="checkbox" checked> Track Speeds</label><label class="layer-option"><input id="show-stations" type="checkbox" checked> Station Dots</label></div>
+    </div>
   </main>
   <script>
 /* @preserve
@@ -711,7 +720,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
   <script>
     const colors=['#d62828','#168aad','#f4a261','#7b2cbf','#2a9d52','#e76f51','#345995'];
     const lineNames=['Red','Blue','Green','Yellow','Orange','Silver','Purple','Teal'];
-    const key='dc-subway-builder-v4',empty={lines:[],tracks:[],stations:[]};
+    const key='dc-subway-builder-v5',empty={lines:[],tracks:[],stations:[]};
     let data;try{data=JSON.parse(localStorage.getItem(key))||empty}catch{data=empty}
     if(!Array.isArray(data.lines))data.lines=[];if(!Array.isArray(data.tracks))data.tracks=[];if(!Array.isArray(data.stations))data.stations=[];
     
