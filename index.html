@@ -720,7 +720,7 @@ svg.leaflet-image-layer.leaflet-interactive path {
   <script>
     const colors=['#d62828','#168aad','#f4a261','#7b2cbf','#2a9d52','#e76f51','#345995'];
     const lineNames=['Red','Blue','Green','Yellow','Orange','Silver','Purple','Teal'];
-    const key='dc-subway-builder-v6',empty={lines:[],tracks:[],stations:[]};
+    const key='dc-subway-builder-v7',empty={lines:[],tracks:[],stations:[]};
     let data;try{data=JSON.parse(localStorage.getItem(key))||empty}catch{data=empty}
     if(!Array.isArray(data.lines))data.lines=[];if(!Array.isArray(data.tracks))data.tracks=[];if(!Array.isArray(data.stations))data.stations=[];
     

@@ -1,7 +1,7 @@
 (() => {
   const lineColors=colors,names=lineNames,$=id=>document.getElementById(id);
   const tracks=L.layerGroup().addTo(map),blueprintsLayer=L.layerGroup().addTo(map),stationsLayer=L.layerGroup().addTo(map),nodesLayer=L.layerGroup().addTo(map),speedsLayer=L.layerGroup().addTo(map),crossoversLayer=L.layerGroup().addTo(map),cursorLayer=L.layerGroup().addTo(map);
-  const SAVE_KEY='dc-subway-builder-v6';
+  const SAVE_KEY='dc-subway-builder-v7';
   data.lines=Array.isArray(data.lines)?data.lines:[];data.tracks=Array.isArray(data.tracks)?data.tracks:[];data.stations=Array.isArray(data.stations)?data.stations:[];
   let activeTool='tracks',startPoint=null,blueprints=[],selectedLine=data.lines[0]?.id||null,trackCount=2,elevation=-5,undoStack=[],redoStack=[],cursorPosition=null;
   const SNAP_PIXELS=58;
